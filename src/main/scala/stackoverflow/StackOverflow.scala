@@ -8,7 +8,10 @@ import annotation.tailrec
 import scala.reflect.ClassTag
 
 /** A raw stackoverflow posting, either a question or an answer */
-case class Posting(postingType: Int, id: Int, acceptedAnswer: Option[Int], parentId: Option[QID], score: Int, tags: Option[String]) extends Serializable
+case class Posting(postingType: Int, id: Int, acceptedAnswer: Option[Int], parentId: Option[QID], score: Int, tags: Option[String]) extends Serializable {
+  lazy val isQuestion = postingType == 1
+  lazy val isAnswer = postingType == 2
+}
 
 
 /** The main class */
@@ -21,11 +24,11 @@ object StackOverflow extends StackOverflow {
   def main(args: Array[String]): Unit = {
 
     val lines   = sc.textFile("src/main/resources/stackoverflow/stackoverflow.csv")
-    val raw     = rawPostings(lines)
-    val grouped = groupedPostings(raw)
-    val scored  = scoredPostings(grouped)
-    val vectors = vectorPostings(scored)
-//    assert(vectors.count() == 2121822, "Incorrect number of vectors: " + vectors.count())
+    val raw: RDD[Question] = rawPostings(lines).persist()
+    val grouped: RDD[(QID, Iterable[(Question, Answer)])] = groupedPostings(raw)
+    val scored: RDD[(Question, HighScore)] = scoredPostings(grouped)
+    val vectors: RDD[(LangIndex, HighScore)] = vectorPostings(scored)
+    assert(vectors.count() == 2121822, "Incorrect number of vectors: " + vectors.count())
 
     val means   = kmeans(sampleVectors(vectors), vectors, debug = true)
     val results = clusterResults(means, vectors)
@@ -78,7 +81,11 @@ class StackOverflow extends Serializable {
 
   /** Group the questions and answers together */
   def groupedPostings(postings: RDD[Posting]): RDD[(QID, Iterable[(Question, Answer)])] = {
-    ???
+    val questions: RDD[(QID, Question)] = postings.filter(_.isQuestion).keyBy(_.id)
+    val answers: RDD[(QID, Answer)] = postings.filter(_.isAnswer).keyBy(_.parentId.get)
+    questions
+      .join(answers)
+      .groupByKey()
   }
 
 
@@ -96,8 +103,9 @@ class StackOverflow extends Serializable {
           }
       highScore
     }
-
-    ???
+    grouped.map {
+      case (_, it) => (it.head._1, answerHighScore(it.map(_._2).toArray))
+    }
   }
 
 
@@ -116,8 +124,9 @@ class StackOverflow extends Serializable {
         }
       }
     }
-
-    ???
+    scored.flatMap {
+      case (q, score) => firstLangInTag(q.tags, langs).map(li => (li * langSpread, score))
+    }
   }
 
 
